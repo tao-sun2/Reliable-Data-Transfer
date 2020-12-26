@@ -12,6 +12,17 @@ send() is not blocked in rdt implementation
 '''
 Address = Tuple[str, int]
 
+CLOSED = 0
+LISTEN = 1
+SYN_SENT = 2
+SYN_RCVD = 3
+ESTABLISHED =4
+FIN_WAIT_1 =5
+FIN_WAIT_2 = 6
+TIME_WAIT = 7
+CLOSE_WAIT = 8
+LAST_ACK =9
+
 class Packet:
     def __init__(self):
         self.SYN = False
@@ -120,17 +131,6 @@ class Packet:
 
         return res
 
-class State(Enum):
-    CLOSED = auto()
-    LISTEN = auto()
-    SYN_SENT = auto()
-    SYN_RCVD = auto()
-    ESTABLISHED = auto()
-    FIN_WAIT_1 = auto()
-    FIN_WAIT_2 = auto()
-    TIME_WAIT = auto()
-    CLOSE_WAIT = auto()
-    LAST_ACK = auto()
 
 
 class StateMachine(Thread):
@@ -160,14 +160,14 @@ class StateMachine(Thread):
                     conn.sending.append((packet, send_time))
 
             # close
-            if conn.state == State.TIME_WAIT and no_packet >= 6:
-                conn.state = State.CLOSED
+            if conn.state == TIME_WAIT and no_packet >= 6:
+                conn.state = CLOSED
                 print(conn.state)
                 conn.close_connection()
 
             # send data
             if len(conn.receive.queue) == 0 and len(conn.sends.queue) != 0 and \
-                    len(conn.sending) == 0 and no_packet >= 3 and conn.state in (State.ESTABLISHED, State.FIN_WAIT_1):
+                    len(conn.sending) == 0 and no_packet >= 3 and conn.state in (ESTABLISHED, FIN_WAIT_1):
                 data = conn.sends.get()
                 if isinstance(data, Packet):
                     to_send = Packet.create(conn.seq, conn.ack, data.payload, SYN=data.SYN, ACK=data.ACK, FIN=data.FIN)
@@ -202,37 +202,37 @@ class StateMachine(Thread):
             not_arrive = [it for (it, send_time) in conn.sending if conn.seq < it.seq + it.LEN]
             all_packet_arrive = len(conn.sends.queue) == 0 and len(not_arrive) == 0
 
-            if conn.state == State.CLOSED and packet.SYN:
-                conn.state = State.SYN_RCVD
+            if conn.state == CLOSED and packet.SYN:
+                conn.state = SYN_RCVD
                 print(conn.state, "send ", end='')
                 conn.send_packet(Packet.create(conn.seq, conn.ack, b'\xAC', SYN=True, ACK=True))
-            elif conn.state == State.SYN_SENT and packet.SYN:
-                conn.state = State.ESTABLISHED
+            elif conn.state == SYN_SENT and packet.SYN:
+                conn.state = ESTABLISHED
                 print(conn.state, "send ", end='')
                 conn.send_packet(Packet.create(conn.seq, conn.ack, ACK=True))
-            elif conn.state == State.SYN_RCVD and packet.ACK:
+            elif conn.state == SYN_RCVD and packet.ACK:
                 assert packet.ack == 1
-                conn.state = State.ESTABLISHED
+                conn.state = ESTABLISHED
             # close
-            elif conn.state == State.ESTABLISHED and packet.FIN:
+            elif conn.state == ESTABLISHED and packet.FIN:
                 conn.send_packet(Packet.create(conn.seq, conn.ack, ACK=True))
-                conn.state = State.CLOSE_WAIT
+                conn.state = CLOSE_WAIT
                 if all_packet_arrive:
                     conn.send_packet(Packet.create(conn.seq, conn.ack, b'\xAF', FIN=True, ACK=True))
-                    conn.state = State.LAST_ACK
-            elif conn.state == State.FIN_WAIT_1 and all_packet_arrive:
-                conn.state = State.FIN_WAIT_2
+                    conn.state = LAST_ACK
+            elif conn.state == FIN_WAIT_1 and all_packet_arrive:
+                conn.state = FIN_WAIT_2
                 if packet.FIN and packet.ACK:
                     conn.send_packet(Packet.create(conn.seq, conn.ack, ACK=True))
-                    conn.state = State.TIME_WAIT
-            elif conn.state == State.CLOSE_WAIT and all_packet_arrive:
+                    conn.state = TIME_WAIT
+            elif conn.state == CLOSE_WAIT and all_packet_arrive:
                 conn.send_packet(Packet.create(conn.seq, conn.ack, b'\xAF', FIN=True, ACK=True))
-                conn.state = State.LAST_ACK
-            elif conn.state in (State.FIN_WAIT_1, State.FIN_WAIT_2) and packet.FIN and packet.ACK:
+                conn.state = LAST_ACK
+            elif conn.state in (FIN_WAIT_1, FIN_WAIT_2) and packet.FIN and packet.ACK:
                 conn.send_packet(Packet.create(conn.seq, conn.ack, ACK=True))
-                conn.state = State.TIME_WAIT
-            elif conn.state == State.LAST_ACK and packet.ACK:
-                conn.state = State.CLOSED
+                conn.state = TIME_WAIT
+            elif conn.state == LAST_ACK and packet.ACK:
+                conn.state = CLOSED
                 print(conn.state)
                 conn.close_connection()
 
@@ -248,7 +248,7 @@ class Connection:
         self.client = client
         self.socket = socket
         self.receive_data = True
-        self.state = State.CLOSED
+        self.state = CLOSED
         self.seq = 0
         self.ack = 0
         self.receive: Queue[Packet] = Queue()
@@ -263,17 +263,17 @@ class Connection:
         return self.message.get(block=True).payload
 
     def send(self, data: bytes) -> int:
-        assert self.state not in (State.CLOSED, State.LISTEN,
-                                  State.FIN_WAIT_1, State.FIN_WAIT_2, State.CLOSE_WAIT,
-                                  State.TIME_WAIT, State.LAST_ACK)
+        assert self.state not in (CLOSED, LISTEN,
+                                  FIN_WAIT_1, FIN_WAIT_2, CLOSE_WAIT,
+                                  TIME_WAIT, LAST_ACK)
         print("push", len(data), "bytes")
         self.sends.put(data)
         return len(data)
 
     def close(self) -> None:
-        assert self.state in (State.SYN_RCVD, State.ESTABLISHED)
+        assert self.state in (SYN_RCVD, ESTABLISHED)
         self.sends.put(Packet.create(data=b'\xAF', FIN=True))
-        self.state = State.FIN_WAIT_1
+        self.state = FIN_WAIT_1
 
     def send_packet(self, packet: Packet):
         print(packet)
@@ -295,7 +295,7 @@ class RDTSocket(UnreliableSocket):
         super().__init__(rate=rate)
         self._rate = rate
         self.debug = debug
-        self.state = State.CLOSED
+        self.state = CLOSED
         self.receiver = None
         self.unhandled_conns: Queue = Queue()
         self.connections: Dict[Address, Connection] = {}
@@ -307,14 +307,13 @@ class RDTSocket(UnreliableSocket):
         connections. The return value is a pair (conn, address) where conn is a new
         socket object usable to send and receive data on the connection, and address
         is the address bound to the socket on the other end of the connection.
-
         This function should be blocking.
         1. receive SYN
         2. send SYNACK
         3. receive ACK
         """
-        assert self.state in (State.CLOSED, State.LISTEN)
-        self.state = State.LISTEN
+        assert self.state in (CLOSED, LISTEN)
+        self.state = LISTEN
 
         def receive():
             while True:
@@ -344,7 +343,7 @@ class RDTSocket(UnreliableSocket):
         2. receive SYNACK
         3. send SYN
         """
-        assert self.state == State.CLOSED
+        assert self.state == CLOSED
 
         conn = Connection(address, self)
         self.connection = conn
@@ -361,7 +360,7 @@ class RDTSocket(UnreliableSocket):
         self.receiver = Thread(target=receive)
         self.receiver.start()
 
-        conn.state = State.SYN_SENT
+        conn.state = SYN_SENT
         conn.send_packet(Packet.create(conn.seq, conn.ack, b'\xAC', SYN=True))
 
 
@@ -370,7 +369,6 @@ class RDTSocket(UnreliableSocket):
         Receive data from the socket.
         The return value is a bytes object representing the data received.
         The maximum amount of data to be received at once is specified by bufsize.
-
         Note that ONLY data send by the peer should be accepted.
         In other words, if someone else sends data to you from another address,
         it MUST NOT affect the data returned by this function.
@@ -414,7 +412,7 @@ class RDTSocket(UnreliableSocket):
         elif self.connections:  # server
             for conn in self.connections.values():
                 conn.close()
-            self.state = State.CLOSED
+            self.state = CLOSED
         else:
             raise Exception("Illegal state")
 
@@ -423,12 +421,7 @@ class RDTSocket(UnreliableSocket):
             UnreliableSocket.close(self)
         elif self.connections:  # server
             del self.connections[conn.client]
-            if self.state == State.CLOSED and len(self.connections) == 0:
+            if self.state == CLOSED and len(self.connections) == 0:
                 UnreliableSocket.close(self)
         else:
             raise Exception("Illegal state")
-
-
-
-
-
