@@ -4,9 +4,12 @@ from threading import Thread, currentThread
 from enum import Enum, auto
 from typing import Tuple, List, Dict
 import time
-
 from USocket import UnreliableSocket
 
+'''
+Remember to transmit in mode B to test the performance
+send() is not blocked in rdt implementation
+'''
 Address = Tuple[str, int]
 
 class Packet:
@@ -256,10 +259,10 @@ class Connection:
         self.machine = StateMachine(self)
         self.machine.start()
 
-    def recv(self, bufsize: int, flags: int = ...) -> bytes:
+    def recv(self, bufsize: int) -> bytes:
         return self.message.get(block=True).payload
 
-    def send(self, data: bytes, flags: int = ...) -> int:
+    def send(self, data: bytes) -> int:
         assert self.state not in (State.CLOSED, State.LISTEN,
                                   State.FIN_WAIT_1, State.FIN_WAIT_2, State.CLOSE_WAIT,
                                   State.TIME_WAIT, State.LAST_ACK)
@@ -286,40 +289,30 @@ class Connection:
         self.socket._close_connection(self)
 
 
-# import provided class
+
 class RDTSocket(UnreliableSocket):
-    def __init__(self):
-        super(RDTSocket, self).__init__()
+    def __init__(self, rate=None, debug=True):
+        super().__init__(rate=rate)
+        self._rate = rate
+        self.debug = debug
         self.state = State.CLOSED
         self.receiver = None
-
         self.unhandled_conns: Queue = Queue()
         self.connections: Dict[Address, Connection] = {}
-
         self.connection = None
 
-    def connect(self, address: Tuple[str, int]):  # send syn; receive syn, ack; send ack    # your code here
-        assert self.state == State.CLOSED
+    def accept(self):
+        """
+        Accept a connection. The socket must be bound to an address and listening for
+        connections. The return value is a pair (conn, address) where conn is a new
+        socket object usable to send and receive data on the connection, and address
+        is the address bound to the socket on the other end of the connection.
 
-        conn = Connection(address, self)
-        self.connection = conn
-
-        def receive():
-            while conn.receive_data:
-                try:
-                    data, addr = self.recvfrom(10 * 1024 * 1024)
-                    packet = Packet.from_bytes(data)
-                    conn.on_recv_packet(packet)
-                except:
-                    pass
-
-        self.receiver = Thread(target=receive)
-        self.receiver.start()
-
-        conn.state = State.SYN_SENT
-        conn.send_packet(Packet.create(conn.seq, conn.ack, b'\xAC', SYN=True))
-
-    def accept(self):  # receive syn; send syn, ack; receive ack    # your code here
+        This function should be blocking.
+        1. receive SYN
+        2. send SYNACK
+        3. receive ACK
+        """
         assert self.state in (State.CLOSED, State.LISTEN)
         self.state = State.LISTEN
 
@@ -341,14 +334,57 @@ class RDTSocket(UnreliableSocket):
             self.receiver.start()
 
         conn = self.unhandled_conns.get()
-
         return conn, conn.client
 
-    def recv(self, bufsize: int, flags: int = ...) -> bytes:
-        assert self.connection
-        return self.connection.recv(bufsize, flags)
+    def connect(self, address: (str, int)):
+        """
+        Connect to a remote socket at address.
+        Corresponds to the process of establishing a connection on the client side.
+        1. send SYN
+        2. receive SYNACK
+        3. send SYN
+        """
+        assert self.state == State.CLOSED
 
-    def send(self, data: bytes, flags: int = ...) -> int:
+        conn = Connection(address, self)
+        self.connection = conn
+
+        def receive():
+            while conn.receive_data:
+                try:
+                    data, addr = self.recvfrom(10 * 1024 * 1024)
+                    packet = Packet.from_bytes(data)
+                    conn.on_recv_packet(packet)
+                except:
+                    pass
+
+        self.receiver = Thread(target=receive)
+        self.receiver.start()
+
+        conn.state = State.SYN_SENT
+        conn.send_packet(Packet.create(conn.seq, conn.ack, b'\xAC', SYN=True))
+
+
+    def recv(self, bufsize: int) -> bytes:
+        """
+        Receive data from the socket.
+        The return value is a bytes object representing the data received.
+        The maximum amount of data to be received at once is specified by bufsize.
+
+        Note that ONLY data send by the peer should be accepted.
+        In other words, if someone else sends data to you from another address,
+        it MUST NOT affect the data returned by this function.
+        """
+
+        assert self.connection
+        return self.connection.recv(bufsize)
+
+    def send(self, data: bytes) -> int:
+        """
+        Send data to the socket.
+        The socket must be connected to a remote socket
+        i.e. self._send_to must not be none.
+        """
         assert self.connection
         total = len(data)
         start = 0
@@ -359,9 +395,9 @@ class RDTSocket(UnreliableSocket):
             end = total
         while end <= total:
             if end == total:
-                self.connection.send(data[start:end], flags)
+                self.connection.send(data[start:end])
                 break
-            self.connection.send(data[start:end], flags)
+            self.connection.send(data[start:end])
             start = end
             end = start + size
             if end >= total:
@@ -369,6 +405,10 @@ class RDTSocket(UnreliableSocket):
         return 1
 
     def close(self) -> None:
+        """
+        Finish the connection and release resources. For simplicity, assume that
+        after a socket is closed, neither futher sends nor receives are allowed.
+        """
         if self.connection:  # client
             self.connection.close()
         elif self.connections:  # server
