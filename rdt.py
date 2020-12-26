@@ -23,6 +23,9 @@ TIME_WAIT = 7
 CLOSE_WAIT = 8
 LAST_ACK = 9
 
+MAX_RECEIVE_SIZE = 65536
+TIME_OUT = 1
+
 
 class Packet:
     def __init__(self):
@@ -153,7 +156,7 @@ class StateMachine(Thread):
             for packet, send_time in sending:
                 if conn.seq >= packet.seq + packet.LEN:
                     continue
-                if now - send_time >= 1.0:
+                if now - send_time >= TIME_OUT:
                     print(conn.state, "retransmit ", end='')
                     conn.send_packet(packet)
                 else:
@@ -274,7 +277,7 @@ class Connection:
         return len(data)
 
     def close(self) -> None:
-        assert self.state in (SYN_RCVD, ESTABLISHED)
+        # assert self.state in (SYN_RCVD, ESTABLISHED)
         self.sends.put(Packet.create(data=b'\xAF', FIN=True))
         self.state = FIN_WAIT_1
 
@@ -320,7 +323,7 @@ class RDTSocket(UnreliableSocket):
         def receive():
             while True:
                 try:
-                    data, addr = self.recvfrom(65536)
+                    data, addr = self.recvfrom(MAX_RECEIVE_SIZE)
                     if addr not in self.connections:
                         conn = Connection(addr, self)
                         self.connections[addr] = conn
@@ -353,7 +356,7 @@ class RDTSocket(UnreliableSocket):
         def receive():
             while conn.receive_data:
                 try:
-                    data, addr = self.recvfrom(65536)
+                    data, addr = self.recvfrom(MAX_RECEIVE_SIZE)
                     packet = Packet.from_bytes(data)
                     conn.on_recv_packet(packet)
                 except:
@@ -388,6 +391,8 @@ class RDTSocket(UnreliableSocket):
         total = len(data)
         start = 0
         end = 0
+        # size = 4096
+        # 4096 65.79458029999999s
         size = 4096
         end = start + size
         if end >= total:
@@ -403,13 +408,14 @@ class RDTSocket(UnreliableSocket):
                 end = total
         return 1
 
-    def close(self) -> None:
+    def close(self):
         """
         Finish the connection and release resources. For simplicity, assume that
         after a socket is closed, neither futher sends nor receives are allowed.
         """
         if self.connection:  # client
             self.send(b'_3@)')
+            time.sleep(3)
             self.connection.close()
         elif self.connections:  # server
             for conn in self.connections.values():
@@ -420,10 +426,10 @@ class RDTSocket(UnreliableSocket):
 
     def _close_connection(self, conn) -> None:
         if self.connection:  # client
-            UnreliableSocket.close(self)
+            super().close()
         elif self.connections:  # server
             del self.connections[conn.client]
             if self.state == CLOSED and len(self.connections) == 0:
-                UnreliableSocket.close(self)
+                super().close()
         else:
             raise Exception("Illegal state")
