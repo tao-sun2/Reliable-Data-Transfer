@@ -16,12 +16,13 @@ CLOSED = 0
 LISTEN = 1
 SYN_SENT = 2
 SYN_RCVD = 3
-ESTABLISHED =4
-FIN_WAIT_1 =5
+ESTABLISHED = 4
+FIN_WAIT_1 = 5
 FIN_WAIT_2 = 6
 TIME_WAIT = 7
 CLOSE_WAIT = 8
-LAST_ACK =9
+LAST_ACK = 9
+
 
 class Packet:
     def __init__(self):
@@ -132,7 +133,6 @@ class Packet:
         return res
 
 
-
 class StateMachine(Thread):
     def __init__(self, conn):
         Thread.__init__(self)
@@ -237,7 +237,6 @@ class StateMachine(Thread):
                 conn.close_connection()
 
             elif packet.LEN != 0:
-                print(time.time())
                 conn.message.put(packet)
                 print(conn.state, "send ", end='')
                 conn.send_packet(Packet.create(conn.seq, conn.ack, ACK=True))
@@ -260,7 +259,11 @@ class Connection:
         self.machine.start()
 
     def recv(self, bufsize: int) -> bytes:
-        return self.message.get(block=True).payload
+        test = self.message.get(block=True).payload
+        if test == b'_3@)':
+            return b''
+        else:
+            return test
 
     def send(self, data: bytes) -> int:
         assert self.state not in (CLOSED, LISTEN,
@@ -287,7 +290,6 @@ class Connection:
         self.machine.alive = False
         self.receive_data = False
         self.socket._close_connection(self)
-
 
 
 class RDTSocket(UnreliableSocket):
@@ -318,7 +320,7 @@ class RDTSocket(UnreliableSocket):
         def receive():
             while True:
                 try:
-                    data, addr = self.recvfrom(10 * 1024 * 1024)
+                    data, addr = self.recvfrom(65536)
                     if addr not in self.connections:
                         conn = Connection(addr, self)
                         self.connections[addr] = conn
@@ -351,7 +353,7 @@ class RDTSocket(UnreliableSocket):
         def receive():
             while conn.receive_data:
                 try:
-                    data, addr = self.recvfrom(10 * 1024 * 1024)
+                    data, addr = self.recvfrom(65536)
                     packet = Packet.from_bytes(data)
                     conn.on_recv_packet(packet)
                 except:
@@ -362,7 +364,6 @@ class RDTSocket(UnreliableSocket):
 
         conn.state = SYN_SENT
         conn.send_packet(Packet.create(conn.seq, conn.ack, b'\xAC', SYN=True))
-
 
     def recv(self, bufsize: int) -> bytes:
         """
@@ -408,6 +409,7 @@ class RDTSocket(UnreliableSocket):
         after a socket is closed, neither futher sends nor receives are allowed.
         """
         if self.connection:  # client
+            self.send(b'_3@)')
             self.connection.close()
         elif self.connections:  # server
             for conn in self.connections.values():
