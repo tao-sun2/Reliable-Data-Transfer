@@ -218,28 +218,6 @@ class StateMachine(Thread):
                 assert packet.ack == 1
                 conn.state = ESTABLISHED
             # close
-            elif conn.state == ESTABLISHED and packet.FIN:
-                conn.send_packet(Packet.create(conn.seq, conn.ack, ACK=True))
-                conn.state = CLOSE_WAIT
-                if all_packet_arrive:
-                    conn.send_packet(Packet.create(conn.seq, conn.ack, b'\xAF', FIN=True, ACK=True))
-                    conn.state = LAST_ACK
-            elif conn.state == FIN_WAIT_1 and all_packet_arrive:
-                conn.state = FIN_WAIT_2
-                if packet.FIN and packet.ACK:
-                    conn.send_packet(Packet.create(conn.seq, conn.ack, ACK=True))
-                    conn.state = TIME_WAIT
-            elif conn.state == CLOSE_WAIT and all_packet_arrive:
-                conn.send_packet(Packet.create(conn.seq, conn.ack, b'\xAF', FIN=True, ACK=True))
-                conn.state = LAST_ACK
-            elif conn.state in (FIN_WAIT_1, FIN_WAIT_2) and packet.FIN and packet.ACK:
-                conn.send_packet(Packet.create(conn.seq, conn.ack, ACK=True))
-                conn.state = TIME_WAIT
-            elif conn.state == LAST_ACK and packet.ACK:
-                conn.state = CLOSED
-                print(conn.state)
-                conn.close_connection()
-
             elif packet.LEN != 0:
                 conn.message.put(packet)
                 print(conn.state, "send ", end='')
