@@ -24,11 +24,10 @@ class RDTSocket(UnreliableSocket):
         super().__init__(rate=rate)
         self.rate = rate
         self.debug = debug
-        self.state = CLOSED
-        self.receiver = None
-        self.unhandled_conns = Queue()
-        self.connections = {}
-        self.connection = None
+        self.controller = None
+        self.all_controllers = Queue()
+        self.client_controller = {}
+        self.threaded_receiver = None
 
     def accept(self):
         """
@@ -41,10 +40,10 @@ class RDTSocket(UnreliableSocket):
         2. send SYNACK
         3. receive ACK
         """
-        if not self.receiver:
-            self.receiver = Thread(target=self.receive_threaded_server)
-            self.receiver.start()
-        conn = self.unhandled_conns.get()
+        if not self.threaded_receiver:
+            self.threaded_receiver = Thread(target=self.receive_threaded_server)
+            self.threaded_receiver.start()
+        conn = self.all_controllers.get()
         return conn, conn.client
 
     def connect(self, address: (str, int)):
@@ -57,20 +56,20 @@ class RDTSocket(UnreliableSocket):
         """
 
         conn = RDTController(address, self)
-        self.connection = conn
-        self.receiver = Thread(target=self.receive_threaded_client)
-        self.receiver.start()
+        self.controller = conn
+        self.threaded_receiver = Thread(target=self.receive_threaded_client)
+        self.threaded_receiver.start()
         conn.state = SENT_SYN
         conn.socket.sendto(RDTPacket.create(conn.seq, conn.ack, b'\xAC', SYN=True).to_bytes(), conn.client)
         conn.sending.append((RDTPacket.create(conn.seq, conn.ack, b'\xAC', SYN=True), time.time()))
 
     # a threaded receiver for client
     def receive_threaded_client(self):
-        while self.connection.receive_data:
+        while self.controller.receive_data:
             try:
                 data, addr = self.recvfrom(MAX_RECEIVE_SIZE)
                 packet = RDTPacket.from_bytes(data)
-                self.connection.receive.put(packet)
+                self.controller.receive.put(packet)
             except Exception:
                 continue
 
@@ -79,12 +78,12 @@ class RDTSocket(UnreliableSocket):
         while True:
             try:
                 data, addr = self.recvfrom(MAX_RECEIVE_SIZE)
-                if addr not in self.connections:
+                if addr not in self.client_controller:
                     conn = RDTController(addr, self)
-                    self.connections[addr] = conn
-                    self.unhandled_conns.put(conn)
+                    self.client_controller[addr] = conn
+                    self.all_controllers.put(conn)
                 packet = RDTPacket.from_bytes(data)
-                self.connections[addr].receive.put(packet)
+                self.client_controller[addr].receive.put(packet)
             except Exception:
                 continue
 
@@ -98,7 +97,7 @@ class RDTSocket(UnreliableSocket):
         it MUST NOT affect the data returned by this function.
         """
 
-        return self.connection.recv(bufsize)
+        return self.controller.recv(bufsize)
 
     def send(self, data: bytes):
         """
@@ -117,9 +116,9 @@ class RDTSocket(UnreliableSocket):
             end = total
         while end <= total:
             if end == total:
-                self.connection.send(data[start:end])
+                self.controller.send(data[start:end])
                 break
-            self.connection.send(data[start:end])
+            self.controller.send(data[start:end])
             start = end
             end = start + size
             if end >= total:
@@ -130,7 +129,7 @@ class RDTSocket(UnreliableSocket):
         Finish the connection and release resources. For simplicity, assume that
         after a socket is closed, neither futher sends nor receives are allowed.
         """
-        if self.connection:
+        if self.controller:
             # send a certain message to represent the end of the connection
             self.send(b'_3@)')
             time.sleep(0.2)
@@ -138,8 +137,8 @@ class RDTSocket(UnreliableSocket):
             time.sleep(0.2)
             self.send(b'_3@)')
             time.sleep(0.2)
-            self.connection.on = False
-            self.connection.receive_data = False
+            self.controller.on = False
+            self.controller.receive_data = False
         super().close()
 
 
@@ -155,7 +154,7 @@ class RDTController:
         self.sends = Queue()
         self.message = Queue()
         self.sending = []
-        self.on =True
+        self.on = True
         self.machine = Thread(target=self.FSM)
         self.machine.start()
 
@@ -189,15 +188,12 @@ class RDTController:
                 else:
                     self.sending.append((packet, send_time))
 
-
-            if (self.receive.empty(),self.sends.empty(),bool(self.sending), self.state == CONNECTION)==(True, False, False, True):
-
+            if (self.receive.empty(), self.sends.empty(), bool(self.sending), self.state == CONNECTION) == (
+                    True, False, False, True):
                 data = self.sends.get()
                 to_send = RDTPacket.create(self.seq, self.ack, data)
                 self.socket.sendto(to_send.to_bytes(), self.client)
                 self.sending.append((to_send, time.time()))
-
-
 
             try:
                 if not self.socket.rate:
@@ -217,7 +213,6 @@ class RDTController:
                 self.sending.append((packet, time.time()))
                 continue
             if packet.LEN != 0 and packet.seq > self.ack:
-
                 continue
             if packet.LEN != 0:
                 self.ack = max(self.ack, packet.seq + packet.LEN)
@@ -247,9 +242,6 @@ class RDTController:
                 packet = RDTPacket.create(self.seq, self.ack, ACK=True)
                 self.socket.sendto(packet.to_bytes(), self.client)
                 self.sending.append((packet, time.time()))
-
-
-
 
 
 class RDTPacket:
