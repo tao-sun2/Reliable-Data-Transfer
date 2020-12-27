@@ -320,12 +320,22 @@ class RDTSocket(UnreliableSocket):
         assert self.state in (CLOSED, LISTEN)
         self.state = LISTEN
 
+        print('---accepted')
+
         def receive():
+            new_socket=RDTSocket(rate=self._rate)
+            ju =False
             while True:
                 try:
-                    data, addr = self.recvfrom(MAX_RECEIVE_SIZE)
+                    if not ju:
+                        print('-----1----')
+                        data, addr = self.recvfrom(MAX_RECEIVE_SIZE)
+                        ju=True
+                        print('-----2----')
+                    else:
+                        data, addr = new_socket.recvfrom(MAX_RECEIVE_SIZE)
                     if addr not in self.connections:
-                        conn = Connection(addr, self)
+                        conn = Connection(addr, new_socket)
                         self.connections[addr] = conn
                         self.unhandled_conns.put(conn)
                     packet = Packet.from_bytes(data)
@@ -357,6 +367,7 @@ class RDTSocket(UnreliableSocket):
             while conn.receive_data:
                 try:
                     data, addr = self.recvfrom(MAX_RECEIVE_SIZE)
+                    conn.client=addr
                     packet = Packet.from_bytes(data)
                     conn.on_recv_packet(packet)
                 except:
@@ -367,6 +378,7 @@ class RDTSocket(UnreliableSocket):
 
         conn.state = SYN_SENT
         conn.send_packet(Packet.create(conn.seq, conn.ack, b'\xAC', SYN=True))
+
 
     def recv(self, bufsize: int) -> bytes:
         """
@@ -432,4 +444,4 @@ class RDTSocket(UnreliableSocket):
             if self.state == CLOSED and len(self.connections) == 0:
                 super().close()
         else:
-            raise Exception("Illegal state")
+            super().close()
