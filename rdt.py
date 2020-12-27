@@ -319,34 +319,9 @@ class RDTSocket(UnreliableSocket):
         """
         assert self.state in (CLOSED, LISTEN)
         self.state = LISTEN
-
-        print('---accepted')
-
-        def receive():
-            new_socket=RDTSocket(rate=self._rate)
-            ju =False
-            while True:
-                try:
-                    if not ju:
-                        print('-----1----')
-                        data, addr = self.recvfrom(MAX_RECEIVE_SIZE)
-                        ju=True
-                        print('-----2----')
-                    else:
-                        data, addr = new_socket.recvfrom(MAX_RECEIVE_SIZE)
-                    if addr not in self.connections:
-                        conn = Connection(addr, new_socket)
-                        self.connections[addr] = conn
-                        self.unhandled_conns.put(conn)
-                    packet = Packet.from_bytes(data)
-                    self.connections[addr].on_recv_packet(packet)
-                except:
-                    pass
-
         if not self.receiver:
-            self.receiver = Thread(target=receive)
+            self.receiver = Thread(target=self.receive_threaded_server)
             self.receiver.start()
-
         conn = self.unhandled_conns.get()
         return conn, conn.client
 
@@ -359,26 +334,34 @@ class RDTSocket(UnreliableSocket):
         3. send SYN
         """
         assert self.state == CLOSED
-
         conn = Connection(address, self)
         self.connection = conn
-
-        def receive():
-            while conn.receive_data:
-                try:
-                    data, addr = self.recvfrom(MAX_RECEIVE_SIZE)
-                    conn.client=addr
-                    packet = Packet.from_bytes(data)
-                    conn.on_recv_packet(packet)
-                except:
-                    pass
-
-        self.receiver = Thread(target=receive)
+        self.receiver = Thread(target=self.receive_threaded_client)
         self.receiver.start()
-
         conn.state = SYN_SENT
         conn.send_packet(Packet.create(conn.seq, conn.ack, b'\xAC', SYN=True))
 
+    def receive_threaded_client(self):
+        while self.connection.receive_data:
+            try:
+                data, addr = self.recvfrom(MAX_RECEIVE_SIZE)
+                packet = Packet.from_bytes(data)
+                self.connection.on_recv_packet(packet)
+            except Exception:
+                print(Exception)
+
+    def receive_threaded_server(self):
+        while True:
+            try:
+                data, addr = self.recvfrom(MAX_RECEIVE_SIZE)
+                if addr not in self.connections:
+                    conn = Connection(addr, self)
+                    self.connections[addr] = conn
+                    self.unhandled_conns.put(conn)
+                packet = Packet.from_bytes(data)
+                self.connections[addr].on_recv_packet(packet)
+            except Exception:
+                print(Exception)
 
     def recv(self, bufsize: int) -> bytes:
         """
@@ -389,7 +372,6 @@ class RDTSocket(UnreliableSocket):
         In other words, if someone else sends data to you from another address,
         it MUST NOT affect the data returned by this function.
         """
-
         assert self.connection
         return self.connection.recv(bufsize)
 
@@ -403,9 +385,7 @@ class RDTSocket(UnreliableSocket):
         total = len(data)
         start = 0
         end = 0
-        # size = 4096
-        # 4096 65.79458029999999s
-        size = 4096
+        size = 1900
         end = start + size
         if end >= total:
             end = total
@@ -418,7 +398,6 @@ class RDTSocket(UnreliableSocket):
             end = start + size
             if end >= total:
                 end = total
-        return 1
 
     def close(self):
         """
@@ -444,4 +423,4 @@ class RDTSocket(UnreliableSocket):
             if self.state == CLOSED and len(self.connections) == 0:
                 super().close()
         else:
-            super().close()
+            raise Exception("Illegal state")
