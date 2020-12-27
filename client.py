@@ -4,12 +4,12 @@ import time
 from difflib import Differ
 
 if __name__=='__main__':
-    client = RDTSocket()
+    client = RDTSocket(rate=10240)
     # client = socket(AF_INET, SOCK_STREAM) # check what python socket does
     client.connect(('127.0.0.1', 9999))
 
     echo = b''
-    count = 3
+    count = 1
     slice_size = 2048
     blocking_send = False
 
@@ -17,6 +17,8 @@ if __name__=='__main__':
         data = f.read()
         encoded = data.encode()
         assert len(data)==len(encoded)
+
+    # encoded =b'test'
 
     '''
     check if your rdt pass either of the two
@@ -40,6 +42,7 @@ if __name__=='__main__':
             client.send(encoded)
             while len(echo) < len(encoded)*(i+1):
                 reply = client.recv(slice_size)
+                print(len(reply),end=' !!!!!')
                 echo += reply
 
     client.close()
@@ -53,3 +56,4 @@ if __name__=='__main__':
     for line in diff:
         if not line.startswith('  '): # check if data is correctly echoed
             print(line)
+    print('reach bottom')

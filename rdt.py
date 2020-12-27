@@ -149,6 +149,7 @@ class StateMachine(Thread):
         no_packet = 0
         cnt = 0
         while self.alive:
+            # print('-----run-------')
             now = datetime.now().timestamp()
 
             sending = conn.sending
@@ -277,8 +278,8 @@ class Connection:
         return len(data)
 
     def close(self) -> None:
-        # assert self.state in (SYN_RCVD, ESTABLISHED)
-        self.sends.put(Packet.create(data=b'\xAF', FIN=True))
+        self.machine.alive = False
+        self.receive_data = False
         self.state = FIN_WAIT_1
 
     def send_packet(self, packet: Packet):
@@ -292,7 +293,7 @@ class Connection:
     def close_connection(self):
         self.machine.alive = False
         self.receive_data = False
-        self.socket._close_connection(self)
+        # self.socket._close_connection(self)
 
 
 class RDTSocket(UnreliableSocket):
@@ -348,7 +349,7 @@ class RDTSocket(UnreliableSocket):
                 packet = Packet.from_bytes(data)
                 self.connection.on_recv_packet(packet)
             except Exception:
-                print(Exception)
+                continue
 
     def receive_threaded_server(self):
         while True:
@@ -361,7 +362,7 @@ class RDTSocket(UnreliableSocket):
                 packet = Packet.from_bytes(data)
                 self.connections[addr].on_recv_packet(packet)
             except Exception:
-                print(Exception)
+                continue
 
     def recv(self, bufsize: int) -> bytes:
         """
@@ -407,20 +408,6 @@ class RDTSocket(UnreliableSocket):
         if self.connection:  # client
             self.send(b'_3@)')
             time.sleep(3)
-            self.connection.close()
-        elif self.connections:  # server
-            for conn in self.connections.values():
-                conn.close()
-            self.state = CLOSED
-        else:
-            raise Exception("Illegal state")
-
-    def _close_connection(self, conn) -> None:
-        if self.connection:  # client
-            super().close()
-        elif self.connections:  # server
-            del self.connections[conn.client]
-            if self.state == CLOSED and len(self.connections) == 0:
-                super().close()
-        else:
-            raise Exception("Illegal state")
+            self.connection.machine.alive = False
+            self.connection.receive_data = False
+        super().close()
