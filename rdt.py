@@ -8,6 +8,7 @@ Remember to transmit in mode B to test the performance
 send() is not blocked in rdt implementation
 '''
 
+# define some states
 CLOSED = 0
 LISTEN = 1
 SYN_SENT = 2
@@ -19,6 +20,7 @@ TIME_WAIT = 7
 CLOSE_WAIT = 8
 LAST_ACK = 9
 
+# define some variables
 MAX_RECEIVE_SIZE = 65536
 TIME_OUT = 0.2
 
@@ -45,7 +47,6 @@ class RDTSocket(UnreliableSocket):
         2. send SYNACK
         3. receive ACK
         """
-        assert self.state in (CLOSED, LISTEN)
         self.state = LISTEN
         if not self.receiver:
             self.receiver = Thread(target=self.receive_threaded_server)
@@ -61,7 +62,7 @@ class RDTSocket(UnreliableSocket):
         2. receive SYNACK
         3. send SYN
         """
-        assert self.state == CLOSED
+
         conn = RDTController(address, self)
         self.connection = conn
         self.receiver = Thread(target=self.receive_threaded_client)
@@ -70,6 +71,7 @@ class RDTSocket(UnreliableSocket):
         conn.socket.sendto(RDTPacket.create(conn.seq, conn.ack, b'\xAC', SYN=True).to_bytes(), conn.client)
         conn.sending.append((RDTPacket.create(conn.seq, conn.ack, b'\xAC', SYN=True), time.time()))
 
+    # a threaded receiver for client
     def receive_threaded_client(self):
         while self.connection.receive_data:
             try:
@@ -79,6 +81,7 @@ class RDTSocket(UnreliableSocket):
             except Exception:
                 continue
 
+    # a threaded receiver for server
     def receive_threaded_server(self):
         while True:
             try:
@@ -101,7 +104,7 @@ class RDTSocket(UnreliableSocket):
         In other words, if someone else sends data to you from another address,
         it MUST NOT affect the data returned by this function.
         """
-        assert self.connection
+
         return self.connection.recv(bufsize)
 
     def send(self, data: bytes):
@@ -142,7 +145,7 @@ class RDTSocket(UnreliableSocket):
             time.sleep(0.2)
             self.send(b'_3@)')
             time.sleep(0.2)
-            self.connection.machine.alive = False
+            self.connection.on = False
             self.connection.receive_data = False
         super().close()
 
@@ -155,122 +158,106 @@ class RDTController:
         self.state = CLOSED
         self.seq = 0
         self.ack = 0
-        self.receive: Queue[RDTPacket] = Queue()
-        self.sends: Queue[bytes] = Queue()
-        self.message: Queue[RDTPacket] = Queue()
+        self.receive = Queue()
+        self.sends = Queue()
+        self.message = Queue()
         self.sending = []
-
-        self.machine = FSM(self)
+        self.on =True
+        self.machine = Thread(target=self.FSM)
         self.machine.start()
 
     def recv(self, bufsize: int) -> bytes:
-        test = self.message.get(block=True).payload
-        if test == b'_3@)':
+        data = self.message.get(block=True).payload
+        # a certain message to break the while which representing the end of the connection
+        if data == b'_3@)':
             return b''
         else:
-            return test
+            return data
 
     def send(self, data: bytes):
-        assert self.state not in (CLOSED, LISTEN,
-                                  FIN_WAIT_1, FIN_WAIT_2, CLOSE_WAIT,
-                                  TIME_WAIT, LAST_ACK)
-
         self.sends.put(data)
 
     def close(self) -> None:
-        self.machine.alive = False
+        self.on = False
         self.receive_data = False
-        self.state = FIN_WAIT_1
 
-
-class FSM(Thread):
-    def __init__(self, conn):
-        Thread.__init__(self)
-        self.conn: RDTController = conn
-        self.alive = True
-
-    def run(self):
-        conn = self.conn
-        no_packet = 0
-        while self.alive:
+    def FSM(self):
+        while self.on:
             now = time.time()
-            sending = conn.sending
+            sending = self.sending
 
-            conn.sending = []  # 已经发过的包
+            self.sending = []  # 已经发过的包
             for packet, send_time in sending:
-                if conn.seq >= packet.seq + packet.LEN:
+                if self.seq >= packet.seq + packet.LEN:
                     continue
                 if now - send_time >= TIME_OUT:
 
-                    conn.socket.sendto(packet.to_bytes(), conn.client)
-                    conn.sending.append((packet, time.time()))
+                    self.socket.sendto(packet.to_bytes(), self.client)
+                    self.sending.append((packet, time.time()))
                 else:
-                    conn.sending.append((packet, send_time))
+                    self.sending.append((packet, send_time))
 
             # send data
-            if conn.receive.empty() and (not conn.sends.empty()) and \
-                    len(conn.sending) == 0 and conn.state == ESTABLISHED:
-
-                data = conn.sends.get()
-                if isinstance(data, RDTPacket):
-                    to_send = RDTPacket.create(conn.seq, conn.ack, data.payload, SYN=data.SYN, ACK=data.ACK,
-                                               FIN=data.FIN)
-                else:
-                    to_send = RDTPacket.create(conn.seq, conn.ack, data)
-
-                conn.socket.sendto(to_send.to_bytes(), conn.client)
-                conn.sending.append((to_send, time.time()))
+            if self.receive.empty() and (not self.sends.empty()) and \
+                    len(self.sending) == 0 and self.state == ESTABLISHED:
+                data = self.sends.get()
+                to_send = RDTPacket.create(self.seq, self.ack, data)
+                self.socket.sendto(to_send.to_bytes(), self.client)
+                self.sending.append((to_send, time.time()))
 
             # receive date
 
             try:
-                if not conn.socket.rate:
+                if not self.socket.rate:
 
-                    packet = conn.receive.get(timeout=1)
+                    packet = self.receive.get(timeout=1)
                 else:
-                    packet = conn.receive.get(timeout=0.3)
+                    packet = self.receive.get(timeout=0.3)
 
-                no_packet = 0
+
             except:
-                no_packet += 1
+
                 continue
 
-            if packet.LEN != 0 and packet.seq < conn.ack:
-                packet = RDTPacket.create(conn.seq, conn.ack, ACK=True)
-                conn.socket.sendto(packet.to_bytes(), conn.client)
-                conn.sending.append((packet, time.time()))
+            if packet.LEN != 0 and packet.seq < self.ack:
+                packet = RDTPacket.create(self.seq, self.ack, ACK=True)
+                self.socket.sendto(packet.to_bytes(), self.client)
+                self.sending.append((packet, time.time()))
                 continue
-            if packet.LEN != 0 and packet.seq > conn.ack:
+            if packet.LEN != 0 and packet.seq > self.ack:
                 continue
             if packet.ACK:
-                conn.seq = max(conn.seq, packet.ack)
+                self.seq = max(self.seq, packet.ack)
             if packet.LEN != 0:
-                conn.ack = max(conn.ack, packet.seq + packet.LEN)
-            if conn.state == CLOSED and packet.SYN:
-                conn.state = SYN_RCVD
+                self.ack = max(self.ack, packet.seq + packet.LEN)
+            if self.state == CLOSED and packet.SYN:
+                self.state = SYN_RCVD
 
-                packet = RDTPacket.create(conn.seq, conn.ack, b'\xAC', SYN=True, ACK=True)
-                conn.socket.sendto(packet.to_bytes(), conn.client)
-                conn.sending.append((packet, time.time()))
-            elif conn.state == SYN_SENT and packet.SYN:
-                conn.state = ESTABLISHED
+                packet = RDTPacket.create(self.seq, self.ack, b'\xAC', SYN=True, ACK=True)
+                self.socket.sendto(packet.to_bytes(), self.client)
+                self.sending.append((packet, time.time()))
+            elif self.state == SYN_SENT and packet.SYN:
+                self.state = ESTABLISHED
 
-                packet = RDTPacket.create(conn.seq, conn.ack, ACK=True)
-                conn.socket.sendto(packet.to_bytes(), conn.client)
-                conn.sending.append((packet, time.time()))
+                packet = RDTPacket.create(self.seq, self.ack, ACK=True)
+                self.socket.sendto(packet.to_bytes(), self.client)
+                self.sending.append((packet, time.time()))
 
-            elif conn.state == SYN_RCVD and packet.ACK:
+            elif self.state == SYN_RCVD and packet.ACK:
                 assert packet.ack == 1
-                conn.state = ESTABLISHED
+                self.state = ESTABLISHED
 
 
 
             elif packet.LEN != 0:
-                conn.message.put(packet)
+                self.message.put(packet)
 
-                packet = RDTPacket.create(conn.seq, conn.ack, ACK=True)
-                conn.socket.sendto(packet.to_bytes(), conn.client)
-                conn.sending.append((packet, time.time()))
+                packet = RDTPacket.create(self.seq, self.ack, ACK=True)
+                self.socket.sendto(packet.to_bytes(), self.client)
+                self.sending.append((packet, time.time()))
+
+
+
 
 
 class RDTPacket:
