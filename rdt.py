@@ -24,7 +24,7 @@ CLOSE_WAIT = 8
 LAST_ACK = 9
 
 MAX_RECEIVE_SIZE = 65536
-TIME_OUT = 1
+TIME_OUT = 0.2
 
 
 class Packet:
@@ -144,46 +144,48 @@ class StateMachine(Thread):
 
     def run(self):
         conn = self.conn
-        socket = conn.socket
-
         no_packet = 0
-        cnt = 0
         while self.alive:
-            # print('-----run-------')
-            now = datetime.now().timestamp()
-
+            now = time.time()
             sending = conn.sending
-            conn.sending = []
+            # print('len------:  ')
+            # print(len(sending))
+            # print('------')
+            conn.sending = []  # 已经发过的包
             for packet, send_time in sending:
                 if conn.seq >= packet.seq + packet.LEN:
                     continue
                 if now - send_time >= TIME_OUT:
                     print(conn.state, "retransmit ", end='')
-                    conn.send_packet(packet)
+
+                    conn.socket.sendto(packet.to_bytes(), conn.client)
+                    conn.sending.append((packet, time.time()))
                 else:
                     conn.sending.append((packet, send_time))
 
-            # close
-            if conn.state == TIME_WAIT and no_packet >= 6:
-                conn.state = CLOSED
-                print(conn.state)
-                conn.close_connection()
-
             # send data
-            if len(conn.receive.queue) == 0 and len(conn.sends.queue) != 0 and \
-                    len(conn.sending) == 0 and no_packet >= 3 and conn.state in (ESTABLISHED, FIN_WAIT_1):
+            if conn.receive.empty() and (not conn.sends.empty()) and \
+                    len(conn.sending) == 0 and conn.state == ESTABLISHED:
+
                 data = conn.sends.get()
                 if isinstance(data, Packet):
                     to_send = Packet.create(conn.seq, conn.ack, data.payload, SYN=data.SYN, ACK=data.ACK, FIN=data.FIN)
                 else:
                     to_send = Packet.create(conn.seq, conn.ack, data)
                 print(conn.state, "send ", end='')
-                conn.send_packet(to_send)
+
+                conn.socket.sendto(to_send.to_bytes(), conn.client)
+                conn.sending.append((to_send, time.time()))
 
             # receive date
-            packet: Packet
+
             try:
-                packet = conn.receive.get(block=False)
+                if not conn.socket.rate:
+                    print('iiiiiiiiiiiiiiiiiiiiiiii')
+                    packet = conn.receive.get(timeout=1)
+                else:
+                    packet = conn.receive.get(timeout=0.3)
+                    print('jjjjjjjjjjjjjjjjjjjjjjj')
                 no_packet = 0
             except:
                 no_packet += 1
@@ -193,7 +195,10 @@ class StateMachine(Thread):
 
             if packet.LEN != 0 and packet.seq < conn.ack:
                 print(conn.state, "resend ", end='')
-                conn.send_packet(Packet.create(conn.seq, conn.ack, ACK=True))
+
+                packet = Packet.create(conn.seq, conn.ack, ACK=True)
+                conn.socket.sendto(packet.to_bytes(), conn.client)
+                conn.sending.append((packet, time.time()))
                 continue
             if packet.LEN != 0 and packet.seq > conn.ack:
                 print(conn.state, "unordered ", packet)
@@ -202,26 +207,31 @@ class StateMachine(Thread):
                 conn.seq = max(conn.seq, packet.ack)
             if packet.LEN != 0:
                 conn.ack = max(conn.ack, packet.seq + packet.LEN)
-
-            not_arrive = [it for (it, send_time) in conn.sending if conn.seq < it.seq + it.LEN]
-            all_packet_arrive = len(conn.sends.queue) == 0 and len(not_arrive) == 0
-
             if conn.state == CLOSED and packet.SYN:
                 conn.state = SYN_RCVD
                 print(conn.state, "send ", end='')
-                conn.send_packet(Packet.create(conn.seq, conn.ack, b'\xAC', SYN=True, ACK=True))
+                packet = Packet.create(conn.seq, conn.ack, b'\xAC', SYN=True, ACK=True)
+                conn.socket.sendto(packet.to_bytes(), conn.client)
+                conn.sending.append((packet, time.time()))
             elif conn.state == SYN_SENT and packet.SYN:
                 conn.state = ESTABLISHED
                 print(conn.state, "send ", end='')
-                conn.send_packet(Packet.create(conn.seq, conn.ack, ACK=True))
+                packet = Packet.create(conn.seq, conn.ack, ACK=True)
+                conn.socket.sendto(packet.to_bytes(), conn.client)
+                conn.sending.append((packet, time.time()))
+
             elif conn.state == SYN_RCVD and packet.ACK:
                 assert packet.ack == 1
                 conn.state = ESTABLISHED
-            # close
+
+
+
             elif packet.LEN != 0:
                 conn.message.put(packet)
                 print(conn.state, "send ", end='')
-                conn.send_packet(Packet.create(conn.seq, conn.ack, ACK=True))
+                packet = Packet.create(conn.seq, conn.ack, ACK=True)
+                conn.socket.sendto(packet.to_bytes(), conn.client)
+                conn.sending.append((packet, time.time()))
 
 
 class Connection:
@@ -247,37 +257,23 @@ class Connection:
         else:
             return test
 
-    def send(self, data: bytes) -> int:
+    def send(self, data: bytes):
         assert self.state not in (CLOSED, LISTEN,
                                   FIN_WAIT_1, FIN_WAIT_2, CLOSE_WAIT,
                                   TIME_WAIT, LAST_ACK)
         print("push", len(data), "bytes")
         self.sends.put(data)
-        return len(data)
 
     def close(self) -> None:
         self.machine.alive = False
         self.receive_data = False
         self.state = FIN_WAIT_1
 
-    def send_packet(self, packet: Packet):
-        print(packet)
-        self.socket.sendto(packet.to_bytes(), self.client)
-        self.sending.append((packet, datetime.now().timestamp()))
-
-    def on_recv_packet(self, packet: Packet):
-        self.receive.put(packet)
-
-    def close_connection(self):
-        self.machine.alive = False
-        self.receive_data = False
-        # self.socket._close_connection(self)
-
 
 class RDTSocket(UnreliableSocket):
     def __init__(self, rate=None, debug=True):
         super().__init__(rate=rate)
-        self._rate = rate
+        self.rate = rate
         self.debug = debug
         self.state = CLOSED
         self.receiver = None
@@ -318,14 +314,15 @@ class RDTSocket(UnreliableSocket):
         self.receiver = Thread(target=self.receive_threaded_client)
         self.receiver.start()
         conn.state = SYN_SENT
-        conn.send_packet(Packet.create(conn.seq, conn.ack, b'\xAC', SYN=True))
+        conn.socket.sendto(Packet.create(conn.seq, conn.ack, b'\xAC', SYN=True).to_bytes(), conn.client)
+        conn.sending.append((Packet.create(conn.seq, conn.ack, b'\xAC', SYN=True), time.time()))
 
     def receive_threaded_client(self):
         while self.connection.receive_data:
             try:
                 data, addr = self.recvfrom(MAX_RECEIVE_SIZE)
                 packet = Packet.from_bytes(data)
-                self.connection.on_recv_packet(packet)
+                self.connection.receive.put(packet)
             except Exception:
                 continue
 
@@ -338,7 +335,7 @@ class RDTSocket(UnreliableSocket):
                     self.connections[addr] = conn
                     self.unhandled_conns.put(conn)
                 packet = Packet.from_bytes(data)
-                self.connections[addr].on_recv_packet(packet)
+                self.connections[addr].receive.put(packet)
             except Exception:
                 continue
 
@@ -385,7 +382,11 @@ class RDTSocket(UnreliableSocket):
         """
         if self.connection:  # client
             self.send(b'_3@)')
-            time.sleep(3)
+            time.sleep(0.2)
+            self.send(b'_3@)')
+            time.sleep(0.2)
+            self.send(b'_3@)')
+            time.sleep(1)
             self.connection.machine.alive = False
             self.connection.receive_data = False
         super().close()
