@@ -78,6 +78,7 @@ class RDTSocket(UnreliableSocket):
                 packet = RDTPacket.from_bytes(data)
                 self.controller.all_received_packets.put(packet)
             except Exception:
+                # byte corrupt happen
                 continue
 
     # a threaded receiver for server
@@ -92,6 +93,7 @@ class RDTSocket(UnreliableSocket):
                 packet = RDTPacket.from_bytes(data)
                 self.client_controller[addr].all_received_packets.put(packet)
             except Exception:
+                # byte corrupt happen
                 continue
 
     def recv(self, bufsize: int) -> bytes:
@@ -251,7 +253,6 @@ class RDTController:
 
             elif packet.LEN != 0:
                 self.received_data_packets.put(packet)
-
                 packet = RDTPacket.create(self.seq, self.ack, ACK=True)
                 self.socket.sendto(packet.to_bytes(), self.to_address)
                 self.have_been_sent.append((packet, time.time()))
