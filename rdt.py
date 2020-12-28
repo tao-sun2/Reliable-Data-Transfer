@@ -65,17 +65,17 @@ class RDTSocket(UnreliableSocket):
         self.threaded_receiver = Thread(target=self.receive_threaded_client)
         self.threaded_receiver.start()
         controller.current_state = SENT_SYN
-        controller.socket.sendto(RDTPacket.create(controller.seq, controller.ack, b'\xAC', SYN=True).to_bytes(),
+        controller.socket.sendto(create(controller.seq, controller.ack, b'\xAC', SYN=True).to_bytes(),
                                  controller.to_address)
         controller.have_been_sent.append(
-            (RDTPacket.create(controller.seq, controller.ack, b'\xAC', SYN=True), time.time()))
+            (create(controller.seq, controller.ack, b'\xAC', SYN=True), time.time()))
 
     # a threaded receiver for client
     def receive_threaded_client(self):
         while self.controller.threaded_receiver_on:
             try:
                 data, addr = self.recvfrom(MAX_RECEIVE_SIZE)
-                packet = RDTPacket.from_bytes(data)
+                packet = from_bytes(data)
                 self.controller.all_received_packets.put(packet)
             except Exception:
                 # byte corrupt happen
@@ -90,7 +90,7 @@ class RDTSocket(UnreliableSocket):
                     conn = RDTController(addr, self)
                     self.client_controller[addr] = conn
                     self.all_controllers.put(conn)
-                packet = RDTPacket.from_bytes(data)
+                packet = from_bytes(data)
                 self.client_controller[addr].all_received_packets.put(packet)
             except Exception:
                 # byte corrupt happen
@@ -213,7 +213,7 @@ class RDTController:
                 self.current_state == CONNECTION) == (
                     True, False, False, True):
                 data = self.to_be_send.get()
-                to_send = RDTPacket.create(self.seq, self.ack, data)
+                to_send = create(self.seq, self.ack, data)
                 self.socket.sendto(to_send.to_bytes(), self.to_address)
                 self.have_been_sent.append((to_send, time.time()))
 
@@ -223,7 +223,7 @@ class RDTController:
                 continue
 
             if packet.LEN != 0 and self.ack > packet.seq:
-                packet = RDTPacket.create(self.seq, self.ack, ACK=True)
+                packet = create(self.seq, self.ack, ACK=True)
                 self.socket.sendto(packet.to_bytes(), self.to_address)
                 self.have_been_sent.append((packet, time.time()))
                 continue
@@ -240,25 +240,77 @@ class RDTController:
             if self.current_state == CLOSED and packet.SYN:
                 self.current_state = RECV_SYN
 
-                packet = RDTPacket.create(self.seq, self.ack, b'\xAC', SYN=True, ACK=True)
+                packet = create(self.seq, self.ack, b'\xAC', SYN=True, ACK=True)
                 self.socket.sendto(packet.to_bytes(), self.to_address)
                 self.have_been_sent.append((packet, time.time()))
 
             elif self.current_state == RECV_SYN and packet.ACK:
-                assert packet.ack == 1
                 self.current_state = CONNECTION
             elif self.current_state == SENT_SYN and packet.SYN:
                 self.current_state = CONNECTION
 
-                packet = RDTPacket.create(self.seq, self.ack, ACK=True)
+                packet = create(self.seq, self.ack, ACK=True)
                 self.socket.sendto(packet.to_bytes(), self.to_address)
                 self.have_been_sent.append((packet, time.time()))
 
             elif packet.LEN != 0:
                 self.received_data_packets.put(packet)
-                packet = RDTPacket.create(self.seq, self.ack, ACK=True)
+                packet = create(self.seq, self.ack, ACK=True)
                 self.socket.sendto(packet.to_bytes(), self.to_address)
                 self.have_been_sent.append((packet, time.time()))
+
+
+def calculate_cheksum(data: bytes):
+    length = len(data)
+    sum = 0
+    for i in range(0, int(length / 2)):
+        b = int.from_bytes(data[0: 2], byteorder='big')
+
+        data = data[2:]
+        sum = (sum + b) % 65536
+    return (65536 - sum) % 65536
+
+
+def from_bytes(byte: bytes):
+    packet = RDTPacket()
+    flag = int.from_bytes(byte[0:2], byteorder='big')
+    if flag & 0x8000 != 0:
+        packet.SYN = True
+    if flag & 0x4000 != 0:
+        packet.ACK = True
+    if flag & 0x2000 != 0:
+        packet.FIN = True
+    packet.seq = int.from_bytes(byte[2:6], byteorder='big')
+    packet.ack = int.from_bytes(byte[6:10], byteorder='big')
+    packet.LEN = int.from_bytes(byte[10:14], byteorder='big')
+    packet.CHECKSUM = int.from_bytes(byte[14:16], byteorder='big')
+    packet.payload = byte[16:]
+
+    if packet.LEN % 2 == 1:
+        packet.payload = packet.payload[:-1]
+
+    assert packet.LEN == len(packet.payload)
+    assert calculate_cheksum(packet.to_bytes()) == 0
+
+    return packet
+
+
+def create(seq=0, ack=0, data=b'', SYN=False, ACK=False, FIN=False):
+    packet = RDTPacket()
+    packet.ACK = ACK
+    packet.FIN = FIN
+    packet.SYN = SYN
+
+    packet.seq = seq
+    packet.ack = ack
+    packet.LEN = len(data)
+
+    packet.payload = data
+    packet.CHECKSUM = 0
+    checksum = calculate_cheksum(packet.to_bytes())
+    packet.CHECKSUM = checksum
+
+    return packet
 
 
 class RDTPacket:
@@ -292,56 +344,3 @@ class RDTPacket:
             data += b'\x00'
 
         return data
-
-    @staticmethod
-    def from_bytes(byte: bytes):
-        packet = RDTPacket()
-        flag = int.from_bytes(byte[0:2], byteorder='big')
-        if flag & 0x8000 != 0:
-            packet.SYN = True
-        if flag & 0x4000 != 0:
-            packet.ACK = True
-        if flag & 0x2000 != 0:
-            packet.FIN = True
-        packet.seq = int.from_bytes(byte[2:6], byteorder='big')
-        packet.ack = int.from_bytes(byte[6:10], byteorder='big')
-        packet.LEN = int.from_bytes(byte[10:14], byteorder='big')
-        packet.CHECKSUM = int.from_bytes(byte[14:16], byteorder='big')
-        packet.payload = byte[16:]
-
-        if packet.LEN % 2 == 1:
-            packet.payload = packet.payload[:-1]
-
-        assert packet.LEN == len(packet.payload)
-        assert RDTPacket.checksum(packet.to_bytes()) == 0
-
-        return packet
-
-    @staticmethod
-    def create(seq=0, ack=0, data=b'', SYN=False, ACK=False, FIN=False):
-        packet = RDTPacket()
-        packet.ACK = ACK
-        packet.FIN = FIN
-        packet.SYN = SYN
-
-        packet.seq = seq
-        packet.ack = ack
-        packet.LEN = len(data)
-
-        packet.payload = data
-        packet.CHECKSUM = 0
-        checksum = RDTPacket.checksum(packet.to_bytes())
-        packet.CHECKSUM = checksum
-
-        return packet
-
-    @staticmethod
-    def checksum(data: bytes):
-        length = len(data)
-        sum = 0
-        for i in range(0, int(length / 2)):
-            b = int.from_bytes(data[0: 2], byteorder='big')
-
-            data = data[2:]
-            sum = (sum + b) % 65536
-        return (65536 - sum) % 65536
