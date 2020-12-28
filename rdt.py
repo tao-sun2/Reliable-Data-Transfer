@@ -222,17 +222,20 @@ class RDTController:
             except:
                 continue
 
-            if packet.LEN != 0 and packet.seq < self.ack:
+            if packet.LEN != 0 and self.ack > packet.seq:
                 packet = RDTPacket.create(self.seq, self.ack, ACK=True)
                 self.socket.sendto(packet.to_bytes(), self.to_address)
                 self.have_been_sent.append((packet, time.time()))
                 continue
-            if packet.LEN != 0 and packet.seq > self.ack:
+            if packet.LEN != 0 and self.ack < packet.seq:
                 continue
             if packet.LEN != 0:
-                self.ack = max(self.ack, packet.seq + packet.LEN)
+                if self.ack < packet.seq + packet.LEN:
+                    self.ack = packet.seq + packet.LEN
+
             if packet.ACK:
-                self.seq = max(self.seq, packet.ack)
+                if self.seq < packet.ack:
+                    self.seq = packet.ack
 
             if self.current_state == CLOSED and packet.SYN:
                 self.current_state = RECV_SYN
