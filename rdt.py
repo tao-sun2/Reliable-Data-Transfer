@@ -253,67 +253,58 @@ class RDTController:
                 self.have_been_sent.append((packet, time.time()))
 
 
-def calculate_cheksum(packet):
+def calculate_checksum(bytes_):
     total = 0
-    for i in range(0, int(len(packet) / 2)):
-        j = int.from_bytes(packet[0: 2], byteorder='big')
+    for i in range(0, int(len(bytes_) / 2)):
+        j = int.from_bytes(bytes_[0: 2], byteorder='big')
         total = (total + j) % 65536
-        packet = packet[2:]
+        bytes_ = bytes_[2:]
     result = (65536 - total) % 65536
     return result
 
 
 def bytes_to_packet(bytes_):
     packet = RDTPacket()
-    flag = int.from_bytes(bytes_[0:2], byteorder='big')
-    () = ()
+    label = int.from_bytes(bytes_[0:2], byteorder='big')
     (packet.SYN, packet.FIN, packet.ACK, packet.seq, packet.ack, packet.length, packet.checksum, packet.payload) = (
-    flag & 0x8000 != 0, flag & 0x2000 != 0, flag & 0x4000 != 0,
-    int.from_bytes(bytes_[2:6], byteorder='big'),
-    int.from_bytes(bytes_[6:10], byteorder='big'),
-    int.from_bytes(bytes_[10:14], byteorder='big'),
-    int.from_bytes(bytes_[14:16], byteorder='big'),
-    bytes_[16:])
+        label & 0x8000 != 0, label & 0x2000 != 0, label & 0x4000 != 0,
+        int.from_bytes(bytes_[2:6], byteorder='big'),
+        int.from_bytes(bytes_[6:10], byteorder='big'),
+        int.from_bytes(bytes_[10:14], byteorder='big'),
+        int.from_bytes(bytes_[14:16], byteorder='big'),
+        bytes_[16:])
     if packet.length % 2 != 0:
         packet.payload = packet.payload[:-1]
-    assert packet.length == len(packet.payload)
-    assert calculate_cheksum(packet_to_bytes(packet)) == 0
+    assert packet.length == len(packet.payload) and calculate_checksum(packet_to_bytes(packet)) == 0
     return packet
 
 
 def create_RDTSocket(seq=0, ack=0, data=b'', SYN=False, ACK=False, FIN=False):
     packet = RDTPacket()
-    packet.ACK = ACK
-    packet.FIN = FIN
-    packet.SYN = SYN
-    packet.seq = seq
-    packet.ack = ack
-    packet.length = len(data)
-    packet.payload = data
-    packet.checksum = 0
-    checksum = calculate_cheksum(packet_to_bytes(packet))
-    packet.checksum = checksum
+    (packet.ACK, packet.FIN, packet.SYN, packet.seq, packet.ack, packet.length, packet.payload) = (
+        ACK, FIN, SYN, seq, ack, len(data), data)
+    packet.checksum = calculate_checksum(packet_to_bytes(packet))
     return packet
 
 
 def packet_to_bytes(packet):
-    data = b''
-    flag = 0
+    bytes_ = b''
+    label = 0
     if packet.SYN:
-        flag += 0x8000
-    if packet.ACK:
-        flag += 0x4000
+        label += 0x8000
     if packet.FIN:
-        flag += 0x2000
-    data += int.to_bytes(flag, 2, byteorder='big')
-    data += int.to_bytes(packet.seq, 4, byteorder='big')
-    data += int.to_bytes(packet.ack, 4, byteorder='big')
-    data += int.to_bytes(packet.length, 4, byteorder='big')
-    data += int.to_bytes(packet.checksum, 2, byteorder='big')
-    data += packet.payload
-    if packet.length % 2 == 1:
-        data += b'\x00'
-    return data
+        label += 0x2000
+    if packet.ACK:
+        label += 0x4000
+    bytes_ += int.to_bytes(label, 2, byteorder='big')
+    bytes_ += int.to_bytes(packet.seq, 4, byteorder='big')
+    bytes_ += int.to_bytes(packet.ack, 4, byteorder='big')
+    bytes_ += int.to_bytes(packet.length, 4, byteorder='big')
+    bytes_ += int.to_bytes(packet.checksum, 2, byteorder='big')
+    bytes_ += packet.payload
+    if packet.length % 2 != 0:
+        bytes_ += b'\x00'
+    return bytes_
 
 
 class RDTPacket:
